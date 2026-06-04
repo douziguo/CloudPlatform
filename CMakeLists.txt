@@ -69,12 +69,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 
 # 添加Qt资源文件
 set(RESOURCES
-        "resources.qrc"
+        "rec/resources.qrc"
 )
 
 # Windows应用程序图标
 if(WIN32)
-    set(APP_ICON_RESOURCE_WINDOWS "${CMAKE_CURRENT_SOURCE_DIR}/app.rc")
+    set(APP_ICON_RESOURCE_WINDOWS "rec/app.rc")
 endif()
 
 # 生成可执行文件

@@ -45,4 +45,4 @@ cmake-bulid-release
 .git
 .idea
 .testBmp
-/thirdparty/glog071/include/glog/flags.h
+.bin

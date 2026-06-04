@@ -39,4 +39,5 @@ cmake --build . --config Release
 
 ## 文档
 
+- `doc/software-design.md` — 软件整体设计文档（架构、模块、数据库、权限）
 - `doc/backup-restore-design.md` — 备份恢复功能设计文档
