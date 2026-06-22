@@ -76,6 +76,10 @@ public:
     bool deleteRemoteFile(const QString &remotePath);
     bool deleteRemoteDir(const QString &remotePath);
 
+    // 查找 plink.exe / pscp.exe（查程序目录 → 当前工作目录 → PATH）
+    QString findPlink();
+    QString findPscp();
+
 signals:
     void connectionEstablished();
     void connectionLost();
@@ -103,10 +107,6 @@ private:
 
     // 配置SSH密钥认证
     bool setupSshKeyAuth();
-
-    // 查找 plink.exe / pscp.exe（查程序目录 → 当前工作目录 → PATH）
-    QString findPlink();
-    QString findPscp();
 
     // 中文文件名用 plink + cat 下载（绕过 pscp 命令行编码问题）
     void downloadFileViaPlinkCat(const QString &remotePath, const QString &localPath);

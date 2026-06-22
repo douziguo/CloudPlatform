@@ -80,8 +80,20 @@ class AuthManager : public QObject
 public:
     static AuthManager* instance();
 
-    // 初始化数据库
+    // 初始化数据库（dbPath 为空时使用默认本地临时路径）
     bool initDatabase(const QString &dbPath = "");
+
+    // 远程数据库同步
+    // 从服务器下载 db 到本地临时路径，返回本地路径（失败返回空字符串）
+    QString syncDbFromServer();
+    // 将当前本地 db 上传回服务器（异步，完成后记录日志）
+    void syncDbToServer();
+
+    // 获取本地 db 临时路径
+    QString localDbPath() const { return m_localDbPath; }
+
+    // 服务器 db 路径（固定）
+    static QString remoteDbPath() { return "/home/ubuntu/cloudplatform_users.db"; }
 
     // 用户认证
     bool login(const QString &username, const QString &password);
@@ -166,6 +178,7 @@ signals:
     void loginSuccess(const QString &username, const QString &role);
     void loginFailed(const QString &reason);
     void loggedOut();
+    void dbSyncToServerFinished(bool success);  // 上传同步完成信号
 
 private:
     explicit AuthManager(QObject *parent = nullptr);
@@ -185,6 +198,8 @@ private:
     QString        m_currentUser;
     UserRole       m_currentRole = UserRole::FieldWorker;
     QString        m_currentClientName;  // 当前用户关联的客户名
+
+    QString        m_localDbPath;        // 本地临时 db 文件路径
 
     QSqlDatabase   m_db;
     static AuthManager *m_instance;

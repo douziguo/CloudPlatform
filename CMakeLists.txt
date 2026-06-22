@@ -111,6 +111,51 @@ if (MSVC)
     set_property(TARGET CLoudPlatform APPEND_STRING PROPERTY LINK_FLAGS_DEBUG "/NODEFAULTLIB:libcmtd.lib")
 endif()
 
+# ============================================================
+#  CPack 打包配置（Release 构建后执行 cpack 或 cmake --build --target package）
+# ============================================================
+set(CPACK_PACKAGE_NAME              "CloudPlatform")
+set(CPACK_PACKAGE_VENDOR            "Your Company")
+set(CPACK_PACKAGE_VERSION           "1.0.0")
+set(CPACK_PACKAGE_VERSION_MAJOR     "1")
+set(CPACK_PACKAGE_VERSION_MINOR     "0")
+set(CPACK_PACKAGE_VERSION_PATCH     "0")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "测绘行业测量数据管理平台")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "CloudPlatform")
+set(CPACK_RESOURCE_FILE_LICENSE     "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.txt")
+
+if(WIN32)
+    # 优先使用 NSIS
+    set(CPACK_GENERATOR "NSIS")
+
+    # NSIS 配置
+    set(CPACK_NSIS_DISPLAY_NAME          "CloudPlatform")
+    set(CPACK_NSIS_PACKAGE_NAME          "CloudPlatform")
+    set(CPACK_NSIS_INSTALL_ROOT          "$PROGRAMFILES64")
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    set(CPACK_NSIS_MUI_ICON              "${CMAKE_CURRENT_SOURCE_DIR}/rec/icon.ico")
+    set(CPACK_NSIS_MUI_UNIICON           "${CMAKE_CURRENT_SOURCE_DIR}/rec/icon.ico")
+    set(CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
+    set(CPACK_NSIS_CREATE_ICONS_EXTRA
+        "CreateShortCut '$DESKTOP\\\\CloudPlatform.lnk' '$INSTDIR\\\\CLoudPlatform.exe'")
+    set(CPACK_NSIS_DELETE_ICONS_EXTRA
+        "Delete '$DESKTOP\\\\CloudPlatform.lnk'")
+    set(CPACK_NSIS_URL_INFO_ABOUT        "https://your-company.com")
+
+    # 安装包包含 bin/ 下所有运行时文件
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin/
+            DESTINATION "."
+            PATTERN "*.pdb" EXCLUDE
+            PATTERN "*d.dll" EXCLUDE   # 排除 Debug DLL
+    )
+    install(TARGETS CLoudPlatform DESTINATION ".")
+
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
+
+include(CPack)
+
 # 打印调试信息
 message(STATUS "源文件: ${SOURCES}")
 message(STATUS "头文件: ${HEADERS}")

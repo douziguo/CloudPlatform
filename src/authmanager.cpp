@@ -1,12 +1,18 @@
 #include "authmanager.h"
+#include "sshmanager.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QStandardPaths>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QRandomGenerator>
 #include <QDebug>
+#include <QThread>
+#include <QEventLoop>
+#include <QProcess>
 
 AuthManager* AuthManager::m_instance = nullptr;
 
@@ -34,9 +40,15 @@ bool AuthManager::initDatabase(const QString &dbPath)
 {
     QString dbDir;
     if (dbPath.isEmpty()) {
-        dbDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        if (dbDir.isEmpty()) {
-            dbDir = QCoreApplication::applicationDirPath();
+        // 优先使用之前 syncDbFromServer() 下载到的本地路径
+        if (!m_localDbPath.isEmpty()) {
+            QFileInfo fi(m_localDbPath);
+            dbDir = fi.absolutePath();
+        } else {
+            dbDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+            if (dbDir.isEmpty()) {
+                dbDir = QCoreApplication::applicationDirPath();
+            }
         }
     } else {
         dbDir = dbPath;
@@ -47,7 +59,14 @@ bool AuthManager::initDatabase(const QString &dbPath)
         dir.mkpath(".");
     }
 
-    QString dbFile = dbDir + "/cloudplatform_users.db";
+    // 若已通过 syncDbFromServer() 下载，直接使用该文件；否则用默认文件名
+    QString dbFile;
+    if (!m_localDbPath.isEmpty() && QFile::exists(m_localDbPath)) {
+        dbFile = m_localDbPath;
+    } else {
+        dbFile = dbDir + "/cloudplatform_users.db";
+        m_localDbPath = dbFile;  // 记录路径，供后续同步使用
+    }
 
     m_db = QSqlDatabase::addDatabase("QSQLITE", "auth_connection");
     m_db.setDatabaseName(dbFile);
@@ -267,6 +286,7 @@ int AuthManager::addProject(const ProjectInfo &info)
 
     int id = query.lastInsertId().toInt();
     qDebug() << "[AuthManager] 添加项目成功: id=" << id << info.name;
+    syncDbToServer();  // 写操作后同步到服务器
     return id;
 }
 
@@ -295,6 +315,7 @@ bool AuthManager::updateProject(int projectId, const ProjectInfo &info)
         qDebug() << "[AuthManager] 更新项目失败:" << query.lastError().text();
         return false;
     }
+    syncDbToServer();  // 写操作后同步到服务器
     return true;
 }
 
@@ -317,6 +338,7 @@ bool AuthManager::deleteProject(int projectId)
         return false;
     }
     qDebug() << "[AuthManager] 删除项目成功: id=" << projectId;
+    syncDbToServer();  // 写操作后同步到服务器
     return true;
 }
 
@@ -425,6 +447,7 @@ int AuthManager::addMeasureTask(const MeasureTask &task)
 
     int id = query.lastInsertId().toInt();
     qDebug() << "[AuthManager] 添加测量任务成功: id=" << id << task.taskName;
+    syncDbToServer();  // 写操作后同步到服务器
     return id;
 }
 
@@ -459,6 +482,7 @@ bool AuthManager::updateMeasureTask(int taskId, const MeasureTask &task)
         qDebug() << "[AuthManager] 更新测量任务失败:" << query.lastError().text();
         return false;
     }
+    syncDbToServer();  // 写操作后同步到服务器
     return true;
 }
 
@@ -475,6 +499,7 @@ bool AuthManager::deleteMeasureTask(int taskId)
         return false;
     }
     qDebug() << "[AuthManager] 删除测量任务成功: id=" << taskId;
+    syncDbToServer();  // 写操作后同步到服务器
     return true;
 }
 
@@ -676,7 +701,8 @@ QString AuthManager::roleString() const
 
 bool AuthManager::canUpload() const
 {
-    return m_isLoggedIn;
+    // 超级管理员无上传权限，仅限浏览和下载
+    return m_isLoggedIn && !isSuperAdmin();
 }
 
 bool AuthManager::canDownload() const
@@ -686,7 +712,8 @@ bool AuthManager::canDownload() const
 
 bool AuthManager::canDelete() const
 {
-    return isCompanyAdmin();
+    // 超级管理员无删除权限，仅限浏览和下载
+    return isCompanyAdmin() && !isSuperAdmin();
 }
 
 bool AuthManager::canManageUsers() const
@@ -747,6 +774,7 @@ bool AuthManager::addUser(const QString &username, const QString &password, User
         return false;
     }
     qDebug() << "[AuthManager] 添加用户成功:" << username << "客户:" << clientName;
+    syncDbToServer();  // 写操作后同步到服务器
     return true;
 }
 
@@ -762,6 +790,7 @@ bool AuthManager::deleteUser(int userId)
         qDebug() << "[AuthManager] 删除用户失败:" << query.lastError().text();
         return false;
     }
+    syncDbToServer();  // 写操作后同步到服务器
     return true;
 }
 
@@ -774,7 +803,9 @@ bool AuthManager::updateUserRole(int userId, UserRole newRole)
     query.addBindValue(static_cast<int>(newRole));
     query.addBindValue(userId);
 
-    return query.exec();
+    bool ok = query.exec();
+    if (ok) syncDbToServer();
+    return ok;
 }
 
 bool AuthManager::updateUserClientName(int userId, const QString &clientName)
@@ -786,7 +817,9 @@ bool AuthManager::updateUserClientName(int userId, const QString &clientName)
     query.addBindValue(clientName);
     query.addBindValue(userId);
 
-    return query.exec();
+    bool ok = query.exec();
+    if (ok) syncDbToServer();
+    return ok;
 }
 
 bool AuthManager::updatePassword(int userId, const QString &newPassword)
@@ -812,7 +845,9 @@ bool AuthManager::updatePassword(int userId, const QString &newPassword)
     query.addBindValue(salt);
     query.addBindValue(userId);
 
-    return query.exec();
+    bool ok = query.exec();
+    if (ok) syncDbToServer();
+    return ok;
 }
 
 QList<UserInfo> AuthManager::getAllUsers()
@@ -917,4 +952,153 @@ QList<AuthManager::UploadRecord> AuthManager::getUploadRecords(const QString &re
         records.append(rec);
     }
     return records;
+}
+
+// ========================================================================
+// 远程数据库同步
+// ========================================================================
+
+QString AuthManager::syncDbFromServer()
+{
+    SshManager *ssh = SshManager::instance();
+    if (!ssh->isConnected()) {
+        qDebug() << "[AuthManager] syncDbFromServer: SSH未连接，跳过下载";
+        return "";
+    }
+
+    // 本地临时路径：AppData/CloudPlatform/cloudplatform_users.db
+    QString localDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (localDir.isEmpty()) {
+        localDir = QCoreApplication::applicationDirPath();
+    }
+    QDir().mkpath(localDir);
+    QString localPath = localDir + "/cloudplatform_users.db";
+
+    QString remotePath = remoteDbPath(); // /home/ubuntu/cloudplatform_users.db
+
+    qDebug() << "[AuthManager] 正在从服务器下载 db:" << remotePath << "->" << localPath;
+
+    // 先检查服务器是否存在该文件
+    QString checkResult = SshManager::executeOnce(
+        ssh->host(), ssh->user(), ssh->password(), ssh->port(), ssh->plinkPath(),
+        QString("test -f %1 && echo EXISTS || echo MISSING").arg(remotePath), 10000
+    );
+    bool remoteExists = checkResult.trimmed().contains("EXISTS");
+
+    if (!remoteExists) {
+        qDebug() << "[AuthManager] 服务器上无 db 文件，将使用本地新建（首次运行）";
+        m_localDbPath = localPath;
+        return localPath;  // 返回路径，initDatabase 会新建空库
+    }
+
+    // 使用 pscp 下载
+    QString pscpPath = ssh->findPscp();
+    if (pscpPath.isEmpty()) {
+        qDebug() << "[AuthManager] syncDbFromServer: 未找到 pscp，无法下载 db";
+        m_localDbPath = localPath;
+        return localPath;
+    }
+
+    // 若已存在旧的本地文件先备份
+    if (QFile::exists(localPath)) {
+        QFile::remove(localPath + ".bak");
+        QFile::copy(localPath, localPath + ".bak");
+    }
+
+    QProcess pscpProc;
+    QStringList args;
+    args << "-pw" << ssh->password()
+         << "-batch"
+         << QString("%1@%2:%3").arg(ssh->user(), ssh->host(), remotePath)
+         << localPath;
+    pscpProc.start(pscpPath, args);
+
+    if (!pscpProc.waitForFinished(30000)) {
+        pscpProc.kill();
+        qDebug() << "[AuthManager] syncDbFromServer: pscp 超时，使用本地文件";
+        // 若下载失败但有备份，恢复备份
+        if (QFile::exists(localPath + ".bak") && !QFile::exists(localPath)) {
+            QFile::copy(localPath + ".bak", localPath);
+        }
+        m_localDbPath = localPath;
+        return localPath;
+    }
+
+    if (pscpProc.exitCode() != 0) {
+        qDebug() << "[AuthManager] syncDbFromServer: pscp 下载失败:"
+                 << pscpProc.readAllStandardError();
+        if (QFile::exists(localPath + ".bak") && !QFile::exists(localPath)) {
+            QFile::copy(localPath + ".bak", localPath);
+        }
+        m_localDbPath = localPath;
+        return localPath;
+    }
+
+    qDebug() << "[AuthManager] db 下载成功:" << localPath;
+    m_localDbPath = localPath;
+    return localPath;
+}
+
+void AuthManager::syncDbToServer()
+{
+    if (m_localDbPath.isEmpty() || !QFile::exists(m_localDbPath)) {
+        qDebug() << "[AuthManager] syncDbToServer: 本地 db 文件不存在，跳过";
+        return;
+    }
+
+    SshManager *ssh = SshManager::instance();
+    if (!ssh->isConnected()) {
+        qDebug() << "[AuthManager] syncDbToServer: SSH未连接，跳过上传";
+        return;
+    }
+
+    QString pscpPath = ssh->findPscp();
+    if (pscpPath.isEmpty()) {
+        qDebug() << "[AuthManager] syncDbToServer: 未找到 pscp，无法上传 db";
+        emit dbSyncToServerFinished(false);
+        return;
+    }
+
+    // 在后台线程中上传，不阻塞 UI
+    QString localPath  = m_localDbPath;
+    QString remotePath = remoteDbPath();
+    QString host       = ssh->host();
+    QString user       = ssh->user();
+    QString password   = ssh->password();
+
+    QThread *thread = new QThread();
+    QObject *worker = new QObject();
+    worker->moveToThread(thread);
+
+    connect(thread, &QThread::started, worker, [=]() {
+        QProcess pscpProc;
+        QStringList args;
+        args << "-pw" << password
+             << "-batch"
+             << localPath
+             << QString("%1@%2:%3").arg(user, host, remotePath);
+        pscpProc.start(pscpPath, args);
+
+        bool ok = false;
+        if (pscpProc.waitForFinished(30000)) {
+            ok = (pscpProc.exitCode() == 0);
+            if (ok) {
+                qDebug() << "[AuthManager] db 已同步到服务器:" << remotePath;
+            } else {
+                qDebug() << "[AuthManager] syncDbToServer: pscp 失败:"
+                         << pscpProc.readAllStandardError();
+            }
+        } else {
+            pscpProc.kill();
+            qDebug() << "[AuthManager] syncDbToServer: pscp 超时";
+        }
+
+        emit AuthManager::instance()->dbSyncToServerFinished(ok);
+        thread->quit();
+    });
+
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+
+    thread->start();
 }

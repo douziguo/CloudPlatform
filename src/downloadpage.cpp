@@ -98,6 +98,17 @@ void DownloadPage::initUI()
     m_fileTree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_fileTree->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
+    // 强制设置选中文本为白色（深色背景），修复浅蓝底+白字不可见的问题
+    // Windows 系统默认使用浅蓝色选中背景，与白字冲突
+    QPalette treePalette = m_fileTree->palette();
+    treePalette.setColor(QPalette::Highlight, QColor(0x37, 0x3E, 0x65));       // 深蓝选中背景
+    treePalette.setColor(QPalette::HighlightedText, Qt::white);                 // 白色选中文字
+    treePalette.setColor(QPalette::Active, QPalette::Highlight, QColor(0x37, 0x3E, 0x65));
+    treePalette.setColor(QPalette::Active, QPalette::HighlightedText, Qt::white);
+    treePalette.setColor(QPalette::Inactive, QPalette::Highlight, QColor(0x50, 0x58, 0x80));
+    treePalette.setColor(QPalette::Inactive, QPalette::HighlightedText, Qt::white);
+    m_fileTree->setPalette(treePalette);
+
     connect(m_fileTree, &QTreeWidget::itemDoubleClicked,
             this, &DownloadPage::onItemDoubleClicked);
     connect(m_fileTree, &QTreeWidget::itemChanged,

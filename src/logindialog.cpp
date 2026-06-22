@@ -20,8 +20,8 @@ LoginDialog::LoginDialog(QWidget *parent)
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     setModal(true);
 
-    // 初始化 AuthManager 数据库
-    AuthManager::instance()->initDatabase();
+    // 注意：不在此处调用 initDatabase()
+    // 数据库由 MainWindow::onStartupSshAndDbSync() 在 SSH 同步完成后统一初始化
 
     initLoginTab();
     initManageTab();

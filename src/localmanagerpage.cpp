@@ -662,78 +662,102 @@ bool LocalManagerPage::downloadProjectFilesFromServer(const QList<int> &projectI
     QDir().mkpath(localDir);
     bool anyFail = false;
 
-    // pscp 路径（程序目录 → 当前目录 → PATH）
-    QString pscpPath = QCoreApplication::applicationDirPath() + "/pscp.exe";
-    if (!QFile::exists(pscpPath)) pscpPath = "pscp.exe";
+    // pscp 路径（复用 SshManager 的查找逻辑）
+    QString pscpPath = ssh->findPscp();
+    if (pscpPath.isEmpty()) {
+        errMsg = QString::fromUtf8("未找到 pscp.exe");
+        log(QString::fromUtf8("[错误] ") + errMsg);
+        return false;
+    }
+
+    // pscp 需要 UTF-8 环境才能正确处理中文路径
+    QProcessEnvironment utf8Env = QProcessEnvironment::systemEnvironment();
+    utf8Env.insert("LANG", "zh_CN.UTF-8");
+    utf8Env.insert("LC_ALL", "zh_CN.UTF-8");
+
+    // ── 辅助：探测远程目录实际路径 ──
+    auto probeRemoteDir = [&](const QString &client,
+                              const QString &proj,
+                              const QString &task) -> QString {
+        // 尝试 3 级路径
+        QString p3 = QString("/home/ubuntu/%1/%2/%3").arg(client, proj, task);
+        QString out3 = ssh->executeCommand(QString("ls -d \"%1\" 2>/dev/null").arg(p3));
+        if (!out3.isEmpty() && out3 == p3) return p3;
+
+        // 回退到 2 级路径
+        QString p2 = QString("/home/ubuntu/%1/%2").arg(client, task);
+        QString out2 = ssh->executeCommand(QString("ls -d \"%1\" 2>/dev/null").arg(p2));
+        if (!out2.isEmpty() && out2 == p2) return p2;
+
+        return QString();  // 不存在
+    };
+
+    // ── 辅助：执行 pscp 下载（含端口、UTF-8 环境） ──
+    auto doDownload = [&](const QString &remoteDir,
+                          const QString &localDest) -> bool {
+        QStringList args;
+        args << "-r" << "-batch";
+        if (ssh->port() != 22)
+            args << "-P" << QString::number(ssh->port());
+        args << "-pw" << ssh->password()
+             << QString("%1@%2:%3").arg(ssh->user(), ssh->host(), remoteDir)
+             << QDir::toNativeSeparators(localDest);
+
+        QProcess proc;
+        proc.setProcessEnvironment(utf8Env);
+        proc.start(pscpPath, args);
+        if (!proc.waitForFinished(300000)) {
+            log(QString::fromUtf8("[错误] 下载超时：%1").arg(remoteDir));
+            return false;
+        }
+        if (proc.exitCode() != 0) {
+            QString err = QString::fromLocal8Bit(proc.readAllStandardError());
+            log(QString::fromUtf8("[警告] 下载可能失败 %1：%2")
+                .arg(remoteDir, err.trimmed().left(200)));
+            return false;
+        }
+        return true;
+    };
 
     for (int pid : projectIds) {
         ProjectInfo p = AuthManager::instance()->getProject(pid);
         if (p.id < 0) continue;
 
-        // 使用项目自身的 clientName（若有），否则回退到当前用户的 clientName
         QString projClient = p.clientName.isEmpty() ? clientName : p.clientName;
-
-        // 获取该项目下所有测量任务
         auto tasks = AuthManager::instance()->getMeasureTasks(pid);
 
         if (tasks.isEmpty()) {
-            // 无任务：直接下载项目级目录 /home/ubuntu/<client>/<projectName>/
-            // 注意：不能预创建目标目录，否则 pscp 会在已存在目录内再建一层
+            // 无任务：探测项目级目录（2 级 /client/project）
             QString remoteDir = QString("/home/ubuntu/%1/%2").arg(projClient, p.name);
-
-            log(QString::fromUtf8("[下载] 项目 [%1]（无任务） 远端目录：%2").arg(p.name, remoteDir));
-
-            QStringList args;
-            args << "-r" << "-batch"
-                 << "-pw" << ssh->password()
-                 << QString("%1@%2:%3").arg(ssh->user(), ssh->host(), remoteDir)
-                 << QDir::toNativeSeparators(localDir);  // 下载到父目录，pscp 自动创建 projectName/
-
-            QProcess proc;
-            proc.start(pscpPath, args);
-            if (!proc.waitForFinished(300000)) {
-                errMsg = QString::fromUtf8("下载超时：") + p.name;
-                log(QString::fromUtf8("[错误] ") + errMsg);
-                anyFail = true;
-            } else if (proc.exitCode() != 0) {
-                QString err = QString::fromLocal8Bit(proc.readAllStandardError());
-                log(QString::fromUtf8("[警告] 项目 %1 下载可能失败：%2")
-                    .arg(p.name).arg(err.trimmed().left(200)));
-            } else {
-                log(QString::fromUtf8("[下载] 项目 %1 完成").arg(p.name));
+            QString out = ssh->executeCommand(QString("ls -d \"%1\" 2>/dev/null").arg(remoteDir));
+            if (out.isEmpty()) {
+                log(QString::fromUtf8("[下载] 项目 [%1] 远端目录不存在，跳过").arg(p.name));
+                continue;
             }
+            log(QString::fromUtf8("[下载] 项目 [%1]（无任务） 远端目录：%2").arg(p.name, remoteDir));
+            if (doDownload(remoteDir, localDir))
+                log(QString::fromUtf8("[下载] 项目 %1 完成").arg(p.name));
+            else
+                anyFail = true;
             continue;
         }
 
-        // 有任务：远程路径 /home/ubuntu/<clientName>/<taskName>/
-        // 下载到 localDir（父目录），pscp 自动创建 taskName/ 子目录，避免嵌套
+        // 有任务：下载到 files/<projectName>/（父目录），pscp 自动创建 taskName/
+        QString localProjDir = QDir(localDir).filePath(p.name);
+        QDir().mkpath(localProjDir);
         for (const auto &task : tasks) {
-            QString remoteDir = QString("/home/ubuntu/%1/%2")
-                                    .arg(projClient, task.taskName);
-
+            QString remoteDir = probeRemoteDir(projClient, p.name, task.taskName);
+            if (remoteDir.isEmpty()) {
+                log(QString::fromUtf8("[下载] 任务 %1/%2 远端目录不存在（2/3级均不存在），跳过")
+                    .arg(p.name, task.taskName));
+                continue;
+            }
             log(QString::fromUtf8("[下载] 任务 [%1/%2] 远端目录：%3")
                 .arg(p.name, task.taskName, remoteDir));
-
-            QStringList args;
-            args << "-r" << "-batch"
-                 << "-pw" << ssh->password()
-                 << QString("%1@%2:%3").arg(ssh->user(), ssh->host(), remoteDir)
-                 << QDir::toNativeSeparators(localDir);  // 下载到父目录，pscp 自动创建 taskName/
-
-            QProcess proc;
-            proc.start(pscpPath, args);
-            if (!proc.waitForFinished(300000)) {
-                errMsg = QString::fromUtf8("下载超时：") + p.name + "/" + task.taskName;
-                log(QString::fromUtf8("[错误] ") + errMsg);
-                anyFail = true;
-            } else if (proc.exitCode() != 0) {
-                QString err = QString::fromLocal8Bit(proc.readAllStandardError());
-                log(QString::fromUtf8("[警告] 任务 %1/%2 下载可能失败：%3")
-                    .arg(p.name, task.taskName).arg(err.trimmed().left(200)));
-                // 不 fatal，继续其他任务
-            } else {
+            if (doDownload(remoteDir, localProjDir))
                 log(QString::fromUtf8("[下载] 任务 %1/%2 完成").arg(p.name, task.taskName));
-            }
+            else
+                anyFail = true;
         }
     }
     return !anyFail;
@@ -755,50 +779,69 @@ bool LocalManagerPage::uploadProjectFilesToServer(const QString &localDir, QStri
     QString clientName = AuthManager::instance()->currentUserClient();
     if (clientName.isEmpty()) clientName = AuthManager::instance()->currentUser();
 
-    // 枚举 localDir 下所有目录（每个对应一个任务）
+    // 枚举 localDir 下每个项目目录 → 每个任务目录
+    // 结构：files/<project>/<task>/
     QDir dir(localDir);
-    QStringList taskDirs = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    QStringList projDirs = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
 
-    if (taskDirs.isEmpty()) {
-        log(QString::fromUtf8("[恢复] 本地无任务文件目录，跳过文件上传"));
+    if (projDirs.isEmpty()) {
+        log(QString::fromUtf8("[恢复] 本地无项目文件目录，跳过文件上传"));
         return true;
     }
 
-    QString pscpPath = QCoreApplication::applicationDirPath() + "/pscp.exe";
-    if (!QFile::exists(pscpPath)) pscpPath = "pscp.exe";
+    QString pscpPath = ssh->findPscp();
+    if (pscpPath.isEmpty()) {
+        errMsg = QString::fromUtf8("未找到 pscp.exe");
+        log(QString::fromUtf8("[错误] ") + errMsg);
+        return false;
+    }
 
-    // 确保客户端目录存在
-    QString remoteClientDir = QString("/home/ubuntu/%1").arg(clientName);
-    ssh->executeCommand(QString("mkdir -p \"%1\"").arg(remoteClientDir));
+    // pscp 需要 UTF-8 环境才能正确处理中文路径
+    QProcessEnvironment utf8Env = QProcessEnvironment::systemEnvironment();
+    utf8Env.insert("LANG", "zh_CN.UTF-8");
+    utf8Env.insert("LC_ALL", "zh_CN.UTF-8");
 
     bool anyFail = false;
-    for (const QString &taskName : taskDirs) {
-        QString localTaskDir = QDir(localDir).filePath(taskName);
+    for (const QString &projName : projDirs) {
+        QString localProjDir = QDir(localDir).filePath(projName);
+        QStringList taskDirs = QDir(localProjDir).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        if (taskDirs.isEmpty()) continue;
 
-        // 上传前扁平化：消除 tar 归档自带目录层级
-        flattenTaskDir(localTaskDir);
+        // 确保远程项目目录存在
+        QString remoteProjDir = QString("/home/ubuntu/%1/%2").arg(clientName, projName);
+        ssh->executeCommand(QString("mkdir -p \"%1\"").arg(remoteProjDir));
 
-        log(QString::fromUtf8("[上传] 恢复任务 %1 → %2/%3")
-            .arg(taskName, remoteClientDir, taskName));
+        for (const QString &taskName : taskDirs) {
+            QString localTaskDir = QDir(localProjDir).filePath(taskName);
 
-        QStringList args;
-        args << "-r" << "-batch"
-             << "-pw" << ssh->password()
-             << QDir::toNativeSeparators(localTaskDir)
-             << QString("%1@%2:%3").arg(ssh->user(), ssh->host(), remoteClientDir);
+            // 上传前扁平化：消除 tar 归档自带目录层级
+            flattenTaskDir(localTaskDir);
 
-        QProcess proc;
-        proc.start(pscpPath, args);
-        if (!proc.waitForFinished(300000)) {
-            errMsg = QString::fromUtf8("上传超时：") + taskName;
-            log(QString::fromUtf8("[错误] ") + errMsg);
-            anyFail = true;
-        } else if (proc.exitCode() != 0) {
-            QString err = QString::fromLocal8Bit(proc.readAllStandardError());
-            log(QString::fromUtf8("[警告] 任务 %1 上传部分失败：%2")
-                .arg(taskName).arg(err.trimmed().left(200)));
-        } else {
-            log(QString::fromUtf8("[上传] 任务 %1 完成").arg(taskName));
+            log(QString::fromUtf8("[上传] 恢复任务 %1/%2 → %3/%2")
+                .arg(projName, taskName, remoteProjDir));
+
+            QStringList args;
+            args << "-r" << "-batch";
+            if (ssh->port() != 22)
+                args << "-P" << QString::number(ssh->port());
+            args << "-pw" << ssh->password()
+                 << QDir::toNativeSeparators(localTaskDir)
+                 << QString("%1@%2:%3").arg(ssh->user(), ssh->host(), remoteProjDir);
+
+            QProcess proc;
+            proc.setProcessEnvironment(utf8Env);
+            proc.start(pscpPath, args);
+            if (!proc.waitForFinished(300000)) {
+                errMsg = QString::fromUtf8("上传超时：") + taskName;
+                log(QString::fromUtf8("[错误] ") + errMsg);
+                anyFail = true;
+            } else if (proc.exitCode() != 0) {
+                QString err = QString::fromLocal8Bit(proc.readAllStandardError());
+                log(QString::fromUtf8("[警告] 任务 %1/%2 上传部分失败：%3")
+                    .arg(projName, taskName).arg(err.trimmed().left(200)));
+            } else {
+                log(QString::fromUtf8("[上传] 任务 %1/%2 完成").arg(projName, taskName));
+            }
         }
     }
     return !anyFail;

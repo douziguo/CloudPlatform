@@ -263,16 +263,23 @@ QTreeWidget {
     background: #FFFFFF;
     font-size: 13px;
     alternate-background-color: #E8F0F8;
-    selection-background-color: #373E65;
-    selection-color: #FFFFFF;
 }
 QTreeWidget::item {
     padding: 3px 2px;
     border-bottom: 1px solid #D8E4F0;
     min-height: 24px;
+    color: #000000;
 }
 QTreeWidget::item:selected {
     background: #373E65;
+    color: #FFFFFF;
+}
+QTreeWidget::item:selected:active {
+    background: #373E65;
+    color: #FFFFFF;
+}
+QTreeWidget::item:selected:!active {
+    background: #505880;
     color: #FFFFFF;
 }
 QTreeWidget::item:alternate {

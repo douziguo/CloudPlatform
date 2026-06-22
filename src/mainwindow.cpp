@@ -30,22 +30,23 @@ MainWindow::MainWindow(QWidget *parent)
     , m_logPanel(nullptr)
     , m_localManagerPage(nullptr)
     , m_sshManager(nullptr)
-    , m_sshAutoConnect(false)  // 登录后再连接SSH
+    , m_sshAutoConnect(true)  // 启用自动连接模式（隐藏按钮，自动连接）
 {
-    // 1. 初始化认证数据库（确保默认admin存在）
-    AuthManager::instance()->initDatabase();
-
-    // 2. 设置无边框窗口
+    // 1. 设置无边框窗口（需先完成，后续弹框需要父窗口存在）
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
 
-    // 3. 初始化SSH管理器（登录后再连接）
+    // 2. 初始化 SSH 管理器并配置连接参数（不立即连接）
     m_sshManager = SshManager::instance();
     initSshConnection();
 
     initUI();
     initConnections();
-    applyRolePermissions();  // 根据角色设置界面权限
+
+    // 3. 在 UI 就绪后，先连接 SSH → 同步 db → 再 initDatabase + LoginDialog
+    //    用 singleShot 确保窗口已经显示再触发连接
     appendLog("[启动] CloudPlatform v1.0.0 已启动");
+    appendLog("[启动] 正在连接服务器以同步用户数据库...");
+    QTimer::singleShot(500, this, &MainWindow::onStartupSshAndDbSync);
 }
 
 MainWindow::~MainWindow() {}
@@ -123,23 +124,24 @@ void MainWindow::initUI()
 
     toolbarLayout->addStretch();
 
-    // === SSH连接控制 ===
+    // === SSH连接控制（自动模式：隐藏按钮，自动管理连接）===
 
-    // SSH状态标签
-    QLabel *sshLabel = new QLabel("SSH:");
-    sshLabel->setStyleSheet("color: #969696; font-size: 12px;");
-    toolbarLayout->addWidget(sshLabel, 0, Qt::AlignVCenter);
-
+    // SSH状态标签（保留用于内部状态跟踪，但默认隐藏）
     m_sshStatusLabel = new QLabel("○ 未连接");
     m_sshStatusLabel->setStyleSheet("color: #f44747; font-weight: bold; font-size: 12px;");
     m_sshStatusLabel->setFixedWidth(80);
+    m_sshStatusLabel->setVisible(false);  // 自动模式下隐藏
     toolbarLayout->addWidget(m_sshStatusLabel, 0, Qt::AlignVCenter);
 
-    // SSH连接按钮
+    // SSH连接按钮（保留功能但默认隐藏，可通过配置显示）
     m_sshConnectBtn = new QPushButton("连接SSH");
     m_sshConnectBtn->setFixedSize(80, 28);
     m_sshConnectBtn->setToolTip("连接SSH服务器");
+    m_sshConnectBtn->setVisible(false);  // 自动模式下隐藏
     toolbarLayout->addWidget(m_sshConnectBtn, 0, Qt::AlignVCenter);
+
+    // 启用自动连接模式（登录后自动连接，无需手动点击）
+    m_sshAutoConnect = true;
 
     toolbarLayout->addSpacing(20);
 
@@ -228,7 +230,7 @@ void MainWindow::initUI()
     setCentralWidget(frameWidget);
 
     // === 状态栏 ===
-    statusBar()->showMessage("SSH未连接 - 请点击「SSH连接」");
+    statusBar()->showMessage("正在初始化...");
 
     // 连接标题栏按钮
     connect(minBtn, &QPushButton::clicked, this, &QMainWindow::showMinimized);
@@ -373,15 +375,15 @@ void MainWindow::initSshConnection()
                 appendLog(QString("[SSH] 命令执行完成，退出码: %1").arg(exitCode));
             });
 
-    appendLog("[SSH] SSH连接管理器已初始化");
+    appendLog("[SSH] SSH连接管理器已初始化（自动连接模式）");
     appendLog(QString("[SSH] 服务器: %1@%2").arg(user, host));
 
-    // 启动时自动连接
+    // 自动连接模式下启动时自动尝试连接
     if (m_sshAutoConnect) {
-        appendLog("[SSH] 正在自动连接服务器...");
-        QTimer::singleShot(1000, this, &MainWindow::connectToSshServer);
+        appendLog("[SSH] 已启用自动连接模式，将在启动/登录时自动连接服务器");
+        // 不在这里立即连接，由 onStartupSshAndDbSync() 统一处理
     } else {
-        appendLog("[SSH] 点击「连接SSH」按钮手动连接服务器");
+        appendLog("[SSH] 手动模式 - 点击「连接SSH」按钮手动连接服务器");
     }
 }
 
@@ -406,10 +408,10 @@ void MainWindow::connectToSshServer()
 void MainWindow::disconnectFromSshServer()
 {
     if (m_sshManager) {
-        // 传 false：主动断开，不发射 connectionLost 信号，避免误弹窗
+        // 传 false：主动断开，不发射 connectionLost 信号，避免误弹窗/自动重连
         m_sshManager->disconnectFromServer(false);
         appendLog("[SSH] 已断开连接");
-        // 手动更新UI状态
+        // 手动更新UI状态（按钮和标签保持隐藏）
         updateSshStatus();
         if (m_sshConnectBtn) {
             m_sshConnectBtn->setText(QString::fromUtf8("连接SSH"));
@@ -429,18 +431,19 @@ bool MainWindow::isSshConnected() const
 
 void MainWindow::onSshConnectionEstablished()
 {
-    appendLog("[SSH] 连接已建立");
+    appendLog("[SSH] 连接已建立（自动模式）");
     updateSshStatus();
 
+    // 自动连接模式下保持按钮隐藏，但更新内部状态
     if (m_sshConnectBtn) {
         m_sshConnectBtn->setText("断开SSH");
-        disconnect(m_sshConnectBtn, &QPushButton::clicked, this, &MainWindow::onSshConnectClicked);
-        connect(m_sshConnectBtn, &QPushButton::clicked, this, &MainWindow::onSshConnectClicked);
+        // 按钮保持隐藏状态
     }
 
     if (m_sshStatusLabel) {
         m_sshStatusLabel->setText("● 已连接");
         m_sshStatusLabel->setStyleSheet("color: #4ec9b0;");
+        // 标签保持隐藏状态
     }
 
     statusBar()->showMessage("SSH已连接 - " + m_sshManager->executeCommand("hostname"));
@@ -526,19 +529,20 @@ void MainWindow::applyRolePermissions()
         }
     }
 
-    // 所有登录用户：上传页
-    m_uploadPage->setEnabled(true);
-    m_tabWidget->addTab(m_uploadPage, QString::fromUtf8("文件上传"));
-    // 登录后刷新上传页的项目下拉框
-    m_uploadPage->refreshProjectCombo();
+    // 上传页：除超级管理员外的所有登录用户可见
+    if (AuthManager::instance()->canUpload()) {
+        m_uploadPage->setEnabled(true);
+        m_tabWidget->addTab(m_uploadPage, QString::fromUtf8("文件上传"));
+        m_uploadPage->refreshProjectCombo();
+    }
 
-    // 管理员和内业人员：下载页
-    if (AuthManager::instance()->canDownload()) {
+    // 管理员和内业人员：下载页（含超级管理员，可浏览下载）
+    if (AuthManager::instance()->canDownload() || AuthManager::instance()->isSuperAdmin()) {
         m_tabWidget->addTab(m_downloadPage, QString::fromUtf8("文件下载"));
     }
 
-    // 管理员和内业人员：项目管理页
-    if (AuthManager::instance()->canManageProjects()) {
+    // 项目管理页：管理员和内业人员可编辑；超级管理员仅浏览（只读）
+    if (AuthManager::instance()->canManageProjects() || AuthManager::instance()->isSuperAdmin()) {
         m_tabWidget->addTab(m_projectPage, QString::fromUtf8("项目管理"));
         // 不在这里刷新，等SSH连接成功后在 onSshConnectionEstablished 中统一刷新
     }
@@ -547,6 +551,11 @@ void MainWindow::applyRolePermissions()
     if (role == UserRole::FieldWorker) {
         m_tabWidget->addTab(m_downloadPage, QString::fromUtf8("文件下载"));
         appendLog(QString::fromUtf8("[权限] 外业人员模式：可查看自己上传的文件，仅允许上传数据"));
+    }
+
+    // 超级管理员：仅浏览和下载，无上传、无项目编辑
+    if (AuthManager::instance()->isSuperAdmin()) {
+        appendLog(QString::fromUtf8("[权限] 超级管理员模式：仅限浏览和下载，项目管理为只读"));
     }
 
     // 所有已登录用户：本地管理（上传/下载历史 + 备份恢复）
@@ -600,8 +609,10 @@ void MainWindow::onLoginClicked()
                     .arg(AuthManager::instance()->currentUser(),
                          AuthManager::instance()->roleString()));
         applyRolePermissions();
-        // 登录后自动连接SSH
-        onAutoConnectSsh();
+        // 登录后自动连接SSH（若未连接）
+        if (!isSshConnected()) {
+            onAutoConnectSsh();
+        }
     }
 }
 
@@ -652,27 +663,100 @@ void MainWindow::onAutoConnectSsh()
     connectToSshServer();
 }
 
+void MainWindow::setSshAutoMode(bool autoMode)
+{
+    // 设置 SSH 自动连接模式
+    m_sshAutoConnect = autoMode;
+
+    // 根据模式显示/隐藏按钮和状态标签
+    if (m_sshConnectBtn) {
+        m_sshConnectBtn->setVisible(!autoMode);
+    }
+    if (m_sshStatusLabel) {
+        m_sshStatusLabel->setVisible(!autoMode);
+    }
+
+    appendLog(QString("[SSH] %1模式")
+              .arg(autoMode ? QString::fromUtf8("自动（隐藏按钮）") : QString::fromUtf8("手动（显示按钮）")));
+
+    // 如果切换到自动模式且当前未连接，立即尝试连接
+    if (autoMode && !isSshConnected() && AuthManager::instance()->isLoggedIn()) {
+        QTimer::singleShot(500, this, &MainWindow::connectToSshServer);
+    }
+}
+
+void MainWindow::onStartupSshAndDbSync()
+{
+    // 步骤1：连接 SSH（自动模式）
+    appendLog("[启动] 正在自动连接 SSH 服务器...");
+    bool sshOk = m_sshManager->connectToServer();
+
+    if (sshOk && m_sshManager->isConnected()) {
+        appendLog("[启动] SSH 连接成功，正在同步用户数据库...");
+        // 步骤2：从服务器下载 db
+        QString localDb = AuthManager::instance()->syncDbFromServer();
+        if (!localDb.isEmpty()) {
+            appendLog(QString("[启动] 数据库同步完成：%1").arg(localDb));
+        } else {
+            appendLog("[启动] 数据库同步失败，使用本地缓存（若存在）");
+        }
+    } else {
+        appendLog("[启动] SSH 连接失败，使用本地缓存数据库（换机器首次启动将只有默认 admin 账户）");
+        appendLog("[启动] 登录后将尝试重新连接 SSH...");
+    }
+
+    // 步骤3：初始化数据库（使用同步回来的或本地的 db）
+    AuthManager::instance()->initDatabase();
+
+    // 步骤4：应用权限（此时未登录状态）
+    applyRolePermissions();
+
+    // 步骤5：弹出登录对话框
+    QTimer::singleShot(100, this, [this]() {
+        LoginDialog loginDlg(this);
+        if (loginDlg.exec() == QDialog::Accepted) {
+            appendLog(QString::fromUtf8("[登录] 欢迎，%1（%2）")
+                        .arg(AuthManager::instance()->currentUser(),
+                             AuthManager::instance()->roleString()));
+            applyRolePermissions();
+            // 若 SSH 已连接则不重复连接；未连接则再次尝试（自动模式）
+            if (!isSshConnected()) {
+                appendLog("[SSH] 登录成功，正在自动连接服务器...");
+                connectToSshServer();
+            }
+        } else {
+            // 用户关闭了登录框，退出程序
+            QApplication::quit();
+        }
+    });
+}
+
+
 void MainWindow::onSshConnectionLost()
 {
     appendLog("[SSH] 连接已断开");
     updateSshStatus();
 
+    // 自动连接模式下保持按钮隐藏，但更新内部状态
     if (m_sshConnectBtn) {
         m_sshConnectBtn->setText(QString::fromUtf8("连接SSH"));
-        // 重连信号
-        disconnect(m_sshConnectBtn, &QPushButton::clicked, this, &MainWindow::onSshConnectClicked);
-        connect(m_sshConnectBtn, &QPushButton::clicked, this, &MainWindow::onSshConnectClicked);
+        // 按钮保持隐藏状态
     }
 
     if (m_sshStatusLabel) {
         m_sshStatusLabel->setText("○ 未连接");
         m_sshStatusLabel->setStyleSheet("color: #f44747;");
+        // 标签保持隐藏状态
     }
 
     statusBar()->showMessage(QString::fromUtf8("SSH未连接"));
 
-    // 如果已登录，弹窗提示SSH未连接
-    if (AuthManager::instance()->isLoggedIn()) {
+    // 如果已登录，自动尝试重连（自动模式下）
+    if (AuthManager::instance()->isLoggedIn() && m_sshAutoConnect) {
+        appendLog("[SSH] 自动模式：3秒后尝试重新连接...");
+        QTimer::singleShot(3000, this, &MainWindow::connectToSshServer);
+    } else if (AuthManager::instance()->isLoggedIn()) {
+        // 手动模式：弹窗提示用户手动连接
         QMessageBox::warning(this,
                             QString::fromUtf8("SSH未连接"),
                             QString::fromUtf8("SSH服务器连接失败！\n\n请检查：\n  1. 网络是否正常\n  2. SSH服务是否启动\n  3. 用户名/密码是否正确\n\n你可以稍后在工具栏点击「连接SSH」手动重连。"));

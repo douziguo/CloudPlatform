@@ -56,17 +56,18 @@ void ProjectPage::initUI()
     QHBoxLayout *projBtnLayout = new QHBoxLayout();
     m_addProjectBtn = new QPushButton(QString::fromUtf8("新增项目"));
     m_addProjectBtn->setCursor(Qt::PointingHandCursor);
-    // 管理员和内业人员均可新增项目
-    m_addProjectBtn->setVisible(AuthManager::instance()->isCompanyAdmin()
-                                || AuthManager::instance()->isOfficeWorker());
+    // 管理员和内业人员可新增/删除项目；超级管理员仅浏览
+    bool canEdit = (AuthManager::instance()->isCompanyAdmin()
+                    || AuthManager::instance()->isOfficeWorker())
+                   && !AuthManager::instance()->isSuperAdmin();
+    m_addProjectBtn->setVisible(canEdit);
     connect(m_addProjectBtn, &QPushButton::clicked, this, &ProjectPage::onAddProject);
     projBtnLayout->addWidget(m_addProjectBtn);
 
     m_deleteProjectBtn = new QPushButton(QString::fromUtf8("删除项目"));
     m_deleteProjectBtn->setCursor(Qt::PointingHandCursor);
-    // 管理员和内业人员均可删除项目
-    m_deleteProjectBtn->setVisible(AuthManager::instance()->isCompanyAdmin()
-                                   || AuthManager::instance()->isOfficeWorker());
+    // 管理员和内业人员可删除项目；超级管理员仅浏览
+    m_deleteProjectBtn->setVisible(canEdit);
     connect(m_deleteProjectBtn, &QPushButton::clicked, this, &ProjectPage::onDeleteProject);
     projBtnLayout->addWidget(m_deleteProjectBtn);
     leftLayout->addLayout(projBtnLayout);
@@ -127,27 +128,24 @@ void ProjectPage::initUI()
     scrollArea->setWidget(formWidget);
     detailLayout->addWidget(scrollArea, 0);
 
-    // 项目保存按钮（所有管理员可编辑自己客户的项目信息）
+    // 项目保存/取消按钮（超级管理员不可见）
     QHBoxLayout *saveProjLayout = new QHBoxLayout();
     saveProjLayout->addStretch();
     m_saveProjectBtn = new QPushButton(QString::fromUtf8("保存项目"));
     m_saveProjectBtn->setFixedWidth(120);
     m_saveProjectBtn->setCursor(Qt::PointingHandCursor);
-    m_saveProjectBtn->setVisible(AuthManager::instance()->isCompanyAdmin()
-                                 || AuthManager::instance()->isOfficeWorker());
+    m_saveProjectBtn->setVisible(canEdit);
     connect(m_saveProjectBtn, &QPushButton::clicked, this, &ProjectPage::onSaveProject);
     saveProjLayout->addWidget(m_saveProjectBtn);
     m_cancelProjectBtn = new QPushButton(QString::fromUtf8("取消"));
     m_cancelProjectBtn->setFixedWidth(80);
     m_cancelProjectBtn->setCursor(Qt::PointingHandCursor);
-    m_cancelProjectBtn->setVisible(AuthManager::instance()->isCompanyAdmin()
-                                   || AuthManager::instance()->isOfficeWorker());
+    m_cancelProjectBtn->setVisible(canEdit);
     saveProjLayout->addWidget(m_cancelProjectBtn);
     detailLayout->addLayout(saveProjLayout);
 
-    // 非管理员且非内业人员：项目详情只读
-    if (!AuthManager::instance()->isCompanyAdmin()
-        && !AuthManager::instance()->isOfficeWorker()) {
+    // 非管理员且非内业人员或超级管理员：项目详情只读
+    if (!canEdit) {
         m_projNameEdit->setReadOnly(true);
         m_projCodeEdit->setReadOnly(true);
         m_projLocationEdit->setReadOnly(true);
@@ -176,22 +174,22 @@ void ProjectPage::initUI()
     m_addTaskBtn = new QPushButton(QString::fromUtf8("新增任务"));
     m_addTaskBtn->setFixedWidth(90);
     m_addTaskBtn->setCursor(Qt::PointingHandCursor);
-    // 管理员和内业人员可管理任务
-    m_addTaskBtn->setVisible(AuthManager::instance()->isCompanyAdmin() || AuthManager::instance()->isOfficeWorker());
+    // 管理员和内业人员可管理任务；超级管理员不可操作任务
+    m_addTaskBtn->setVisible(canEdit);
     connect(m_addTaskBtn, &QPushButton::clicked, this, &ProjectPage::onAddTask);
     taskHeaderLayout->addWidget(m_addTaskBtn);
 
     m_editTaskBtn = new QPushButton(QString::fromUtf8("编辑任务"));
     m_editTaskBtn->setFixedWidth(90);
     m_editTaskBtn->setCursor(Qt::PointingHandCursor);
-    m_editTaskBtn->setVisible(AuthManager::instance()->isCompanyAdmin() || AuthManager::instance()->isOfficeWorker());
+    m_editTaskBtn->setVisible(canEdit);
     connect(m_editTaskBtn, &QPushButton::clicked, this, &ProjectPage::onEditTask);
     taskHeaderLayout->addWidget(m_editTaskBtn);
 
     m_deleteTaskBtn = new QPushButton(QString::fromUtf8("删除任务"));
     m_deleteTaskBtn->setFixedWidth(90);
     m_deleteTaskBtn->setCursor(Qt::PointingHandCursor);
-    m_deleteTaskBtn->setVisible(AuthManager::instance()->isCompanyAdmin() || AuthManager::instance()->isOfficeWorker());
+    m_deleteTaskBtn->setVisible(canEdit);
     connect(m_deleteTaskBtn, &QPushButton::clicked, this, &ProjectPage::onDeleteTask);
     taskHeaderLayout->addWidget(m_deleteTaskBtn);
 
@@ -345,22 +343,27 @@ void ProjectPage::refreshProjectList()
 
 void ProjectPage::refreshPermissions()
 {
-    bool canManage = AuthManager::instance()->isCompanyAdmin() || AuthManager::instance()->isOfficeWorker();
+    // 超级管理员：仅限浏览，所有编辑/新增/删除按钮隐藏，表单只读
+    bool isSuper = AuthManager::instance()->isSuperAdmin();
 
-    // 新增/删除项目：管理员和内业人员均可操作
+    // 公司管理员和内业人员可编辑项目；超级管理员仅浏览（只读）
+    bool canManage = (AuthManager::instance()->isCompanyAdmin() ||
+                      AuthManager::instance()->isOfficeWorker()) && !isSuper;
+
+    // 新增/删除项目
     if (m_addProjectBtn) m_addProjectBtn->setVisible(canManage);
     if (m_deleteProjectBtn) m_deleteProjectBtn->setVisible(canManage);
 
-    // 保存/取消按钮：管理员和内业人员均可见
+    // 保存/取消按钮
     if (m_saveProjectBtn) m_saveProjectBtn->setVisible(canManage);
     if (m_cancelProjectBtn) m_cancelProjectBtn->setVisible(canManage);
 
-    // 任务管理按钮：管理员和内业人员
+    // 任务管理按钮（新增/编辑/删除任务）
     if (m_addTaskBtn) m_addTaskBtn->setVisible(canManage);
     if (m_editTaskBtn) m_editTaskBtn->setVisible(canManage);
     if (m_deleteTaskBtn) m_deleteTaskBtn->setVisible(canManage);
 
-    // 表单可编辑性：管理员和内业人员均可编辑项目详情
+    // 表单可编辑性：超级管理员和不可管理者均为只读
     bool readOnly = !canManage;
     if (m_projNameEdit) m_projNameEdit->setReadOnly(readOnly);
     if (m_projCodeEdit) m_projCodeEdit->setReadOnly(readOnly);
@@ -369,8 +372,8 @@ void ProjectPage::refreshPermissions()
     if (m_projDescEdit) m_projDescEdit->setReadOnly(readOnly);
     if (m_projNotesEdit) m_projNotesEdit->setReadOnly(readOnly);
 
-    qDebug() << "[ProjectPage] refreshPermissions: canManage=" << canManage
-             << "readOnly=" << readOnly;
+    qDebug() << "[ProjectPage] refreshPermissions: isSuper=" << isSuper
+             << "canManage=" << canManage << "readOnly=" << readOnly;
 }
 
 void ProjectPage::reset()
@@ -726,7 +729,7 @@ void ProjectPage::onDeleteTask()
     if (reply != QMessageBox::Yes) return;
 
     if (AuthManager::instance()->deleteMeasureTask(m_currentTaskId)) {
-        // 删除远程任务目录：/home/ubuntu/<clientName>/<taskName>/
+        // 删除远程任务目录：/home/ubuntu/<clientName>/<projectName>/<taskName>/
         SshManager *ssh = SshManager::instance();
         if (ssh->isConnected() && !taskInfo.taskName.isEmpty() && !projInfo.name.isEmpty()) {
             QString clientName = projInfo.clientName;
@@ -734,8 +737,8 @@ void ProjectPage::onDeleteTask()
                 clientName = AuthManager::instance()->currentUserClient();
                 if (clientName.isEmpty()) clientName = AuthManager::instance()->currentUser();
             }
-            QString remotePath = QString("/home/ubuntu/%1/%2")
-                                     .arg(clientName, taskInfo.taskName);
+            QString remotePath = QString("/home/ubuntu/%1/%2/%3")
+                                     .arg(clientName, projInfo.name, taskInfo.taskName);
             bool remoteDeleted = ssh->deleteRemoteDir(remotePath);
             if (!remoteDeleted) {
                 qWarning() << "[ProjectPage] 远程任务目录删除失败或SSH未连接:" << remotePath;

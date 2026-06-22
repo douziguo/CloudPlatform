@@ -51,6 +51,9 @@ private slots:
     void onLogoutClicked();      // 退出登录
     void onUserManageClicked();
 
+    // 启动时：SSH连接 → 同步 db → 弹出登录框
+    void onStartupSshAndDbSync();
+
 private:
     void initUI();
     void initConnections();
@@ -59,6 +62,7 @@ private:
     void applyRolePermissions();   // 根据角色应用界面权限
     void setupRoleBasedUI();      // 角色切换时刷新界面
     void onAutoConnectSsh();      // 登录后自动连接SSH
+    void setSshAutoMode(bool autoMode);  // 设置是否为自动连接模式（隐藏按钮）
 
     // 标题栏
     QWidget *m_titleBar;
